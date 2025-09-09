@@ -1,57 +1,72 @@
-name: Rolling release (update latest assets)
+name: Rolling release (latest assets)
+
 on:
   push:
     paths:
-      - "dist/**"          # run when anything under dist/ changes
-  workflow_dispatch:       # allow manual runs from the Actions tab
+      - "dist/**"              # run when anything under dist/ changes
+  workflow_dispatch:           # allow manual runs
+
+concurrency:
+  group: rolling-release
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: write      # allow the workflow to create/edit releases
+      contents: write          # REQUIRED to create a release and upload assets
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build stage folder and manifest
+      # Build a flat _stage/ with unique asset names and generate manifest.json
+      - name: Build stage and manifest
+        shell: python
         run: |
-          python3 - <<'PY'
           import os, json, hashlib, time, pathlib, shutil
           root = pathlib.Path("dist")
-          stage = pathlib.Path("_stage")
-          stage.mkdir(exist_ok=True)
+          stage = pathlib.Path("_stage"); stage.mkdir(exist_ok=True)
+          if not root.exists():
+            raise SystemExit("dist/ folder not found or empty")
+
           files = []
           for p in root.rglob("*"):
             if p.is_file():
-              target = str(p.relative_to(root)).replace("\\","/")   # install path on client
+              target = str(p.relative_to(root)).replace("\\","/")
               with open(p, "rb") as f:
                 sha = hashlib.sha256(f.read()).hexdigest()
-              # Asset names in a release are flat, so make a unique name per file:
               asset_name = target.replace("/", "__")
               shutil.copy2(p, stage / asset_name)
               files.append({
-                "asset_name": asset_name,   # how the asset is named in the release
-                "target": target,           # where to install on the client
+                "asset_name": asset_name,
+                "target": target,
                 "sha256": sha,
                 "size": p.stat().st_size
               })
+
           manifest = {
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "files": files
           }
-          with open("manifest.json","w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2)
-          PY
+          pathlib.Path("manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          print(f"Prepared {len(files)} asset(s).")
 
-      - name: Ensure 'rolling' release exists
-        run: |
-          gh release view rolling || gh release create rolling -t "Rolling" -n "Always-up-to-date assets"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Upload/overwrite manifest.json into a release tagged 'rolling'
+      - name: Upload manifest.json
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: rolling
+          release_name: Rolling
+          file: manifest.json
+          overwrite: true
 
-      - name: Upload assets (overwrite changed ones)
-        run: |
-          gh release upload rolling manifest.json --clobber
-          gh release upload rolling _stage/* --clobber
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Upload/overwrite all staged assets
+      - name: Upload staged assets
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          tag: rolling
+          release_name: Rolling
+          file: _stage/*
+          file_glob: true
+          overwrite: true
