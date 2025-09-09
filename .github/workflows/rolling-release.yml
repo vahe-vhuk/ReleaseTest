@@ -55,4 +55,3 @@ jobs:
           gh release upload rolling _stage/* --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
