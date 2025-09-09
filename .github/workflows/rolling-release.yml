@@ -1,0 +1,58 @@
+name: Rolling release (update latest assets)
+on:
+  push:
+    paths:
+      - "dist/**"          # run when anything under dist/ changes
+  workflow_dispatch:       # allow manual runs from the Actions tab
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # allow the workflow to create/edit releases
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build stage folder and manifest
+        run: |
+          python3 - <<'PY'
+          import os, json, hashlib, time, pathlib, shutil
+          root = pathlib.Path("dist")
+          stage = pathlib.Path("_stage")
+          stage.mkdir(exist_ok=True)
+          files = []
+          for p in root.rglob("*"):
+            if p.is_file():
+              target = str(p.relative_to(root)).replace("\\","/")   # install path on client
+              with open(p, "rb") as f:
+                sha = hashlib.sha256(f.read()).hexdigest()
+              # Asset names in a release are flat, so make a unique name per file:
+              asset_name = target.replace("/", "__")
+              shutil.copy2(p, stage / asset_name)
+              files.append({
+                "asset_name": asset_name,   # how the asset is named in the release
+                "target": target,           # where to install on the client
+                "sha256": sha,
+                "size": p.stat().st_size
+              })
+          manifest = {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "files": files
+          }
+          with open("manifest.json","w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+          PY
+
+      - name: Ensure 'rolling' release exists
+        run: |
+          gh release view rolling || gh release create rolling -t "Rolling" -n "Always-up-to-date assets"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload assets (overwrite changed ones)
+        run: |
+          gh release upload rolling manifest.json --clobber
+          gh release upload rolling _stage/* --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
