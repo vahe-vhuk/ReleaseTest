@@ -3,8 +3,8 @@ name: Rolling release (latest assets)
 on:
   push:
     paths:
-      - "dist/**"              # run when anything under dist/ changes
-  workflow_dispatch:           # allow manual runs
+      - "dist/**"
+  workflow_dispatch:
 
 concurrency:
   group: rolling-release
@@ -14,11 +14,10 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # REQUIRED to create a release and upload assets
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
-      # Build a flat _stage/ with unique asset names and generate manifest.json
       - name: Build stage and manifest
         shell: python
         run: |
@@ -50,7 +49,6 @@ jobs:
           pathlib.Path("manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
           print(f"Prepared {len(files)} asset(s).")
 
-      # Upload/overwrite manifest.json into a release tagged 'rolling'
       - name: Upload manifest.json
         uses: svenstaro/upload-release-action@v2
         with:
@@ -60,7 +58,6 @@ jobs:
           file: manifest.json
           overwrite: true
 
-      # Upload/overwrite all staged assets
       - name: Upload staged assets
         uses: svenstaro/upload-release-action@v2
         with:
@@ -70,3 +67,32 @@ jobs:
           file: _stage/*
           file_glob: true
           overwrite: true
+
+      # 👉 Add this step right after uploads
+      - name: Prune orphaned assets (remove files no longer in dist/)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const manifest = JSON.parse(fs.readFileSync('manifest.json','utf8'));
+            const expected = new Set(['manifest.json', ...manifest.files.map(f => f.asset_name)]);
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+
+            const rel = await github.rest.repos.getReleaseByTag({ owner, repo, tag: 'rolling' });
+            const release_id = rel.data.id;
+
+            let page = 1, per_page = 100, assets = [];
+            while (true) {
+              const { data } = await github.rest.repos.listReleaseAssets({ owner, repo, release_id, per_page, page });
+              assets.push(...data);
+              if (data.length < per_page) break;
+              page++;
+            }
+
+            for (const a of assets) {
+              if (!expected.has(a.name)) {
+                core.info(`Deleting orphan asset: ${a.name}`);
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: a.id });
+              }
+            }
